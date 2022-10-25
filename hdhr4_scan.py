@@ -3,7 +3,8 @@
 from __future__ import unicode_literals
 import sys, os, io, re, argparse, time, curses, datetime, traceback
 from threading import Thread
-if sys.version_info[0] == 2:
+pyversion = sys.version_info[0]
+if pyversion == 2:
     from StringIO import StringIO
 
 else:
@@ -18,7 +19,7 @@ except:
 '''
     Shell for the hdhomerun_config program to scan for channels,
     to compare a fresh scan for changes since the last stored scan
-    or to play a channel with mplayer
+    or to play a channel with mplayer or ffmpeg and mpg123
     Configuration is stored in ~/.hdhr/hdhr_scan.cfg
     run hdhr4_scan.py --help for all options
 
@@ -73,8 +74,16 @@ class HDhomerunPlay(Thread):
         devnull = io.open('/dev/null', 'w')
         self.p1 = Popen(args = ['hdhomerun_config',values['id'], 'save', '/tuner%s' % values['tuner'], '-'],
                         stdout = PIPE)
-        p2 = Popen(args = ['mplayer', '-fs', '-'], stdin = self.p1.stdout, stdout = devnull, stderr = devnull)
-        p2.wait()
+        if mplayer['present']:
+            p2 = Popen(args = ['mplayer', '-fs', '-'], stdin = self.p1.stdout, stdout = devnull)
+            p2.wait()
+
+        else:
+            p2 = Popen(args = ['ffmpeg', '-i', '-', '-map', '0:a', '-f', 'mp3', '-'],
+                    stdin = self.p1.stdout, stdout = PIPE, stderr = devnull)
+            p3 = Popen(args = ['mpg123', '-'], stdin = p2.stdout, stderr = devnull)
+            p3.wait()
+
         devnull.close()
 
     def stop(self):
@@ -129,6 +138,30 @@ def read_commandline():
                     metavar = '<sid:key>', help = 'Link the key to the serviceid for tuning.\n')
 
     return parser.parse_args()
+#
+def check_path(name, use_sudo = False):
+    p = {'name': name, 'path': None, 'present': False}
+    if use_sudo:
+        try:
+            path = check_output(['sudo', 'which', name], stderr = None)
+            p['path'] = re.sub(b'\n', b'',path)
+            p['present'] = True
+
+        except:
+            #~ traceback.print_exc()
+            print('%s not Found!\n' % (name))
+
+    else:
+        try:
+            path = check_output(['which', name], stderr = None)
+            p['path'] = re.sub(b'\n', b'',path)
+            p['present'] = True
+
+        except:
+            #~ traceback.print_exc()
+            print('%s not Found!\n' % (name))
+
+    return p
 #
 def open_file(file_name, extensie , mode = 'rb'):
     if file_name in (None,  'None', ''):
@@ -469,15 +502,29 @@ def diff_scans():
         diffm['old'].append(multiplexline(refmultiplexes[ts]))
 
     refs = list(refchannels.keys())
-    diffs = {'new': [], 'old': [], 'changed': []}
+    diffs = {'new': [], 'old': [], 'changed': [], 'cname': [], 'ccid': []}
     for s in channels:
         if s['sid'] in refs:
             for k, v in refchannels[s['sid']].items():
+                if k in ('name', 'cid', 'system'):
+                    continue
+
                 if v != s[k]:
                     #changed
                     diffs['changed'].append('old: %s' % serviceline(refchannels[s['sid']]))
                     diffs['changed'].append('new: %s\n' % serviceline(s))
                     break
+
+            else:
+                if refchannels[s['sid']]['name'] != s['name'] :
+                    #changed
+                    diffs['cname'].append('old: %s' % serviceline(refchannels[s['sid']]))
+                    diffs['cname'].append('new: %s\n' % serviceline(s))
+
+                elif refchannels[s['sid']]['cid'] != s['cid'] :
+                    #changed
+                    diffs['ccid'].append('old: %s' % serviceline(refchannels[s['sid']]))
+                    diffs['ccid'].append('new: %s\n' % serviceline(s))
 
             refs.remove(s['sid'])
 
@@ -515,14 +562,6 @@ def diff_scans():
         for l in diffm['old']:
             print('    %s' % l)
 
-    if len(diffs['changed']) == 0:
-        print('  No changed services.')
-
-    else:
-        print('  Changed services:')
-        for l in diffs['changed']:
-            print('    %s' % l)
-
     if len(diffs['new']) == 0:
         print('  No new services.')
 
@@ -537,6 +576,30 @@ def diff_scans():
     else:
         print('  Removed services:')
         for l in diffs['old']:
+            print('    %s' % l)
+
+    if len(diffs['cname']) == 0:
+        print('  No changed servicenames.')
+
+    else:
+        print('  Changed servicenames:')
+        for l in diffs['cname']:
+            print('    %s' % l)
+
+    if len(diffs['ccid']) == 0:
+        print('  No changed channelnumbers.')
+
+    else:
+        print('  Changed channelnumbers:')
+        for l in diffs['ccid']:
+            print('    %s' % l)
+
+    if len(diffs['changed']) == 0:
+        print('  No otherwise changed services.')
+
+    else:
+        print('  Otherwise changed services:')
+        for l in diffs['changed']:
             print('    %s' % l)
 
 #
@@ -604,6 +667,25 @@ def printline(text):
         fout.write(u'{:}\n'.format(text))
 
 # Initialization
+hdhr = check_path('hdhomerun_config')
+if not hdhr['present']:
+    print('Please first install the "hdhomerun_config" program!')
+    sys.exit(1)
+
+mplayer = check_path('mplayer')
+ffmpeg = check_path('ffmpeg')
+mpg123 = check_path('mpg123')
+if mplayer['present']:
+    can_play = True
+
+elif ffmpeg['present'] and mpg123['present']:
+    can_play = True
+    print('Without "mplayer" you won\'t be able to play TV channels.')
+
+else:
+    can_play = False
+    print('Without either "mplayer" or both "mpg123" and "ffmpeg" you won\'t be able to play any channels.')
+
 args = read_commandline()
 read_config()
 if args.id != None:
@@ -626,14 +708,19 @@ if save_key(args.key):
     sys.exit(0)
 
 save_config(list(refmultiplexes.values()), list(refchannels.values()))
-if args.play != None:
+if args.play != None and can_play:
     set_channel(args.play)
     play = HDhomerunPlay()
     play.start()
-    print('Press "S" to quit')
+    print('Press "Q" to quit')
     while True:
-        ans = raw_input()
-        if ans in ('s', 'S') or not play.is_alive():
+        if pyversion == 2:
+            ans = raw_input()
+
+        else:
+            ans = input()
+
+        if ans in ('q', 'Q') or not play.is_alive():
             break
 
     play.stop()
