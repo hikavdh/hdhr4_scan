@@ -1,0 +1,8 @@
+# Location of the python files
+ScriptDir="/opt/bin"
+# User id that all the processes should run as.
+Radio_UID="mythtv"
+# Radio channel to tune to
+Radio_Channel=1
+# Seconds to wait before starting the script
+DelayedStart=0

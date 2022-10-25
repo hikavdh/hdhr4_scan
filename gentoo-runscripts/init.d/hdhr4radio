@@ -1,0 +1,52 @@
+#!/sbin/openrc-run
+# Copyright 2022 Hika van den Hoven
+# Distributed under the terms of the GNU General Public License v2
+# $Header: $
+
+depend() {
+	need net
+	after local
+}
+
+start() {
+
+	ebegin "Starting HDHR4 Radio"
+	sleep ${DelayedStart}
+
+	eindent
+	einfo "Starting Control Script"
+	start-stop-daemon --start --quiet --background --wait 1000 \
+		--pidfile "/run/hdhr4radio-${Radio_UID}.pid" --make-pidfile \
+		--user ${Radio_UID} --name "hdhr4radio" \
+                --exec ${ScriptDir}/hdhr4_scan.py -- --play ${Radio_Channel}
+	eend $?
+
+	eoutdent
+}
+
+stop() {
+	ebegin "Stopping HDHR4 Radio"
+
+	eindent
+
+	if [ "$(pgrep -u ${Radio_UID} mplayer)" ]; then
+		einfo "Terminating mplayer"
+		start-stop-daemon --stop --quiet \
+			--user ${Radio_UID} --name mplayer
+	fi
+	eend $?
+
+	if [ "$(pgrep -u ${Radio_UID} mpg123)" ]; then
+		einfo "Terminating mpg123"
+		start-stop-daemon --stop --quiet \
+			--user ${Radio_UID} --name mpg123
+	fi
+	eend $?
+
+        einfo "Stopping Control Script"
+        start-stop-daemon --stop --quiet \
+                --pidfile "/run/hdhr4radio-${Radio_UID}.pid"
+        ewend $?
+
+	eoutdent
+}
