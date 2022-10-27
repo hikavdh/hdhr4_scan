@@ -1,25 +1,22 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 from __future__ import unicode_literals
 import sys, os, io, re, argparse, time, curses, datetime, traceback
 from threading import Thread
+from subprocess import Popen, PIPE, check_output, call
 pyversion = sys.version_info[0]
 if pyversion == 2:
     from StringIO import StringIO
+    DEVNULL = io.open(os.devnull, 'w')
 
 else:
     from io import StringIO
-
-try:
-    from subprocess32 import Popen, PIPE, check_output, call
-
-except:
-    from subprocess import Popen, PIPE, check_output, call
+    from subprocess import DEVNULL
 
 '''
     Shell for the hdhomerun_config program to scan for channels,
     to compare a fresh scan for changes since the last stored scan
-    or to play a channel with mplayer or ffmpeg and mpg123
+    or to play a channel with mplayer or ffmpeg with aplay or mpg123
     Configuration is stored in ~/.hdhr/hdhr_scan.cfg
     run hdhr4_scan.py --help for all options
 
@@ -45,8 +42,15 @@ values = {
     'tuner': '0',
     'radiostart': '',
     'radioend': '',
+    'playerid': 0,
+    'player': 'auto',
     'storedate': None,
     'scandate': None}
+players = {
+    'names': ['auto', 'mplayer', 'aplay', 'mpg123'],
+    'mplayer': {'options': ['-fs', '-'], 'use_ffmpeg': False, 'format': ''},
+    'aplay': {'options': [], 'use_ffmpeg': True, 'format': 'wav'},
+    'mpg123': {'options': ['-'], 'use_ffmpeg': True, 'format': 'mp3'}}
 multiplexes = []
 channels = []
 refmultiplexes = {}
@@ -71,20 +75,22 @@ class HDhomerunPlay(Thread):
         Thread.__init__(self)
 
     def run(self):
-        devnull = io.open('/dev/null', 'w')
+        #, stdout = DEVNULL
+        #, stderr = DEVNULL
         self.p1 = Popen(args = ['hdhomerun_config',values['id'], 'save', '/tuner%s' % values['tuner'], '-'],
                         stdout = PIPE)
-        if mplayer['present']:
-            p2 = Popen(args = ['mplayer', '-fs', '-'], stdin = self.p1.stdout, stdout = devnull)
-            p2.wait()
-
-        else:
-            p2 = Popen(args = ['ffmpeg', '-i', '-', '-map', '0:a', '-f', 'mp3', '-'],
-                    stdin = self.p1.stdout, stdout = PIPE, stderr = devnull)
-            p3 = Popen(args = ['mpg123', '-'], stdin = p2.stdout, stderr = devnull)
+        name = values['player']
+        command = [name]
+        command.extend(players[name]['options'])
+        if players[name]['use_ffmpeg']:
+            p2 = Popen(args = ['ffmpeg', '-i', '-', '-map', '0:a', '-f', players[name]['format'], '-'],
+                    stdin = self.p1.stdout, stdout = PIPE, stderr = DEVNULL)
+            p3 = Popen(args = command, stdin = p2.stdout, stderr = DEVNULL)
             p3.wait()
 
-        devnull.close()
+        else:
+            p2 = Popen(args = command, stdin = self.p1.stdout, stderr = DEVNULL)
+            p2.wait()
 
     def stop(self):
         self.p1.terminate()
@@ -133,33 +139,34 @@ def read_commandline():
                             '    5 = by multiplex:channelnumber\n' +
                             '    6 = by multiplex:channelname\n')
     parser.add_argument('-p', '--play', type = str, default = None, dest = 'play',
-                    metavar = '<sid>or<key>', help = 'Play the stream from given serviceid or shortkey.\n')
+                    metavar = '<sid>or<key>', help = 'Play the stream from given serviceid or shortkey.\n'+
+                            'Use key=0 to not tune and link into an existing stream\n'+
+                            'Playing will stop at the previous location.\n')
+    parser.add_argument('-P', '--player', type = int, default = -1 , dest = 'player',
+                    metavar = '<nr>', help = 'The player to use:\n' +
+                            '    0 = use autodetection (default)\n' +
+                            '    1 = use mplayer\n' +
+                            '    2 = use aplay on a wav created with ffmpeg\n' +
+                            '    3 = use mpg123 on a mp3 created with ffmpeg\n')
     parser.add_argument('-k', '--key', type = str, default = None, dest = 'key',
                     metavar = '<sid:key>', help = 'Link the key to the serviceid for tuning.\n')
+
+    parser.add_argument('-t', '--delay', type = int, default = 0, dest = 'delay',
+                    metavar = '<seconds>', help = 'Delay play with given number of seconds.\n')
 
     return parser.parse_args()
 #
 def check_path(name, use_sudo = False):
-    p = {'name': name, 'path': None, 'present': False}
-    if use_sudo:
-        try:
-            path = check_output(['sudo', 'which', name], stderr = None)
-            p['path'] = re.sub(b'\n', b'',path)
-            p['present'] = True
+    p = {'name': name, 'path': None, 'present': False, 'version': None}
+    command = ['sudo', 'which', name] if use_sudo else ['which', name]
+    try:
+        path = check_output(command, stderr = DEVNULL)
+        p['path'] = path.strip(b'\n')
+        p['present'] = True
 
-        except:
-            #~ traceback.print_exc()
-            print('%s not Found!\n' % (name))
-
-    else:
-        try:
-            path = check_output(['which', name], stderr = None)
-            p['path'] = re.sub(b'\n', b'',path)
-            p['present'] = True
-
-        except:
-            #~ traceback.print_exc()
-            print('%s not Found!\n' % (name))
+    except:
+        #~ traceback.print_exc()
+        print('%s not Found!\n' % (name))
 
     return p
 #
@@ -232,6 +239,10 @@ def read_config():
                     if name in ('id', 'tuner', 'radiostart', 'radioend'):
                         values[name] = val
 
+                    if name == 'player' and val in players['names']:
+                        values[name] = val
+                        values[ 'playerid'] = players['names'].index(val)
+
                     if name == 'storedate':
                         if val in ('', '0', 'none'):
                             values[name] = None
@@ -279,7 +290,7 @@ def save_config(multiplexes=None, channels=None):
         return
 
     f.write('[config]\n')
-    for name in ('id', 'tuner', 'radiostart', 'radioend'):
+    for name in ('id', 'tuner', 'radiostart', 'radioend', 'player'):
         f.write('%s = %s\n' % (name, values[name]))
 
     if isinstance(values['storedate'], datetime.date):
@@ -672,22 +683,31 @@ if not hdhr['present']:
     print('Please first install the "hdhomerun_config" program!')
     sys.exit(1)
 
-mplayer = check_path('mplayer')
-ffmpeg = check_path('ffmpeg')
-mpg123 = check_path('mpg123')
-if mplayer['present']:
-    can_play = True
-
-elif ffmpeg['present'] and mpg123['present']:
-    can_play = True
-    print('Without "mplayer" you won\'t be able to play TV channels.')
-
-else:
-    can_play = False
-    print('Without either "mplayer" or both "mpg123" and "ffmpeg" you won\'t be able to play any channels.')
-
 args = read_commandline()
 read_config()
+ffmpeg = check_path('ffmpeg')
+can_play = False
+for name in players['names'][1:]:
+    players[name].update(check_path(name))
+    if name == 'mplayer' and not players[name]['present']:
+        print('Without "mplayer" you won\'t be able to play TV channels.')
+
+    if players[name]['use_ffmpeg']:
+        if not ffmpeg['present']:
+            players[name]['present'] = False
+
+        elif name == 'aplay' and players[name]['present']:
+            version = check_output(['aplay', '--version'], stderr = DEVNULL).split()[2]
+            if version < b'1.1.7':
+                players['aplay'][ 'present'] = False
+                print('aplay version is %s. Upgrade to 1.1.7 or higher' % version)
+
+    if players[name]['present']:
+        can_play = True
+
+if not can_play:
+    print('Without either "mplayer" or "ffmpeg" with "aplay" or "mpg123" you won\'t be able to play any channels.')
+
 if args.id != None:
     values['id'] = args.id
 
@@ -703,16 +723,33 @@ if args.radioids != None:
         values['radiostart'] = int(ids[0])
         values['radioend'] = int(ids[1])
 
+if 0 <= args.player < len(players['names']):
+    values[ 'playerid'] = args.player
+    values['player'] = players['names'][args.player]
+
 if save_key(args.key):
     save_config(list(refmultiplexes.values()), list(refchannels.values()))
     sys.exit(0)
 
 save_config(list(refmultiplexes.values()), list(refchannels.values()))
 if args.play != None and can_play:
-    set_channel(args.play)
+    if values[ 'playerid'] == 0:
+        for id in range(1, len(players['names'])):
+            name = players['names'][id]
+            if players[name]['present']:
+                values['playerid'] = id
+                values['player'] = name
+                break
+
+    if args.delay > 0:
+        time.sleep(args.delay)
+
+    if args.play != '0':
+        set_channel(args.play)
+
     play = HDhomerunPlay()
     play.start()
-    print('Press "Q" to quit')
+    print('Press "Q" to quit\n')
     while True:
         if pyversion == 2:
             ans = raw_input()
@@ -768,6 +805,9 @@ if args.save:
 
 # Closeup
 fin.close()
+if pyversion == 2:
+    DEVNULL.close()
+
 if args.rawscan:
     hdhrscan.result.close()
 
