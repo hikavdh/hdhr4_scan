@@ -1,5 +1,5 @@
 #!/sbin/openrc-run
-# Copyright 2022 Hika van den Hoven
+# Copyright 2015 Hika van den Hoven
 # Distributed under the terms of the GNU General Public License v2
 # $Header: $
 
@@ -11,14 +11,13 @@ depend() {
 start() {
 
 	ebegin "Starting HDHR4 Radio"
-	sleep ${DelayedStart}
 
 	eindent
 	einfo "Starting Control Script"
 	start-stop-daemon --start --quiet --background --wait 1000 \
 		--pidfile "/run/hdhr4radio-${Radio_UID}.pid" --make-pidfile \
 		--user ${Radio_UID} --name "hdhr4radio" \
-                --exec ${ScriptDir}/hdhr4_scan.py -- --play ${Radio_Channel}
+                --exec ${ScriptDir}/hdhr4_scan.py -- --play ${Radio_Channel} --delay ${DelayedStart}
 	eend $?
 
 	eoutdent
@@ -29,10 +28,24 @@ stop() {
 
 	eindent
 
+	if [ "$(pgrep -u ${Radio_UID} hdhomerun_confi)" ]; then
+		einfo "Terminating hdhomerun_config"
+		start-stop-daemon --stop --quiet \
+			--user ${Radio_UID} --name hdhomerun_confi
+	fi
+	eend $?
+
 	if [ "$(pgrep -u ${Radio_UID} mplayer)" ]; then
 		einfo "Terminating mplayer"
 		start-stop-daemon --stop --quiet \
 			--user ${Radio_UID} --name mplayer
+	fi
+	eend $?
+
+	if [ "$(pgrep -u ${Radio_UID} aplay)" ]; then
+		einfo "Terminating aplay"
+		start-stop-daemon --stop --quiet \
+			--user ${Radio_UID} --name aplay
 	fi
 	eend $?
 
